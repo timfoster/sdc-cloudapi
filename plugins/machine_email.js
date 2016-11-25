@@ -5,12 +5,11 @@
  */
 
 /*
- * Copyright (c) 2014, Joyent, Inc.
+ * Copyright (c) 2016, Joyent, Inc.
  */
 
 var assert = require('assert');
 var util = require('util');
-var restify = require('restify');
 var nodemailer = require('nodemailer');
 
 // --- Globals

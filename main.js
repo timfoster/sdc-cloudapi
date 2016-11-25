@@ -25,6 +25,7 @@ var bunyan = require('bunyan');
 var nopt = require('nopt');
 var restify = require('restify');
 var RequestCaptureStream = restify.bunyan.RequestCaptureStream;
+var tritonTracer = require('triton-tracer');
 
 var app = require('./lib').app;
 
@@ -198,6 +199,10 @@ function run() {
 
     setupLogger(config);
     config.log = LOG;
+
+    tritonTracer.init({
+        log: config.log
+    });
 
     // We create a temporary server which will reply to all requests with 503
     // until the proper cloudapi server can begin listening. We have the
