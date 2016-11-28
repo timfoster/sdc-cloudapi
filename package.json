@@ -24,7 +24,7 @@
         "cueball": "1.1.4",
         "kang": "1.1.0",
         "sdc-clients": "git+https://github.com/joyent/node-sdc-clients.git#rfd-35-cls",
-        "ufds": "1.2.0",
+        "ufds": "git+https://github.com/joyent/node-ufds#rfd-35-cls",
         "semver": "2.2.1",
         "nodemailer": "0.3.29",
         "clone": "0.1.5",
