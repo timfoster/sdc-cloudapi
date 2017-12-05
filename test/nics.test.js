@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright 2016 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
@@ -174,37 +174,23 @@ function deleteFixtures(t, fixtures, cb) {
                 next();
                 return;
             }
-            CLIENT.vmapi.listJobs({
-                vm_uuid: ctx.instId,
-                task: 'destroy'
-            }, function (err, jobs) {
-                t.ifError(err, 'list "destroy" jobs for vm ' + ctx.instId);
-                if (err) {
-                    next(err);
-                    return;
-                }
-
-                t.ok(Array.isArray(jobs), 'got an array of jobs');
-                var job = jobs[0];
-                t.ok(job, 'first one is job ' + job.uuid);
-                waitForJob(CLIENT, job.uuid, function (err2) {
-                    t.ifError(err2, 'waitForJob ' + job.uuid);
-                    next(err2);
-                });
+            waitForJob(CLIENT, ctx.deleteJobUuid, function (err) {
+                t.ifError(err, 'waitForJob ' + ctx.deleteJobUuid);
+                next(err);
             });
         },
 
-        function getHeadnode(ctx, next) {
+        function getATestServer(ctx, next) {
             if (fixtures) {
-                ctx.headnode = fixtures.headnode;
+                ctx.server = fixtures.server;
                 next();
-            } else {
-                common.getHeadnode(CLIENT, function (err, headnode) {
-                    t.ifError(err, 'getHeadnode');
-                    ctx.headnode = headnode;
-                    next();
-                });
+                return;
             }
+            common.getTestServer(CLIENT, function (err, testServer) {
+                t.ifError(err, 'getATestServer');
+                ctx.server = testServer;
+                next();
+            });
         },
 
         function removeServerTags(ctx, next) {
@@ -220,8 +206,8 @@ function deleteFixtures(t, fixtures, cb) {
                 nicTags.push(fixtures.internal.nicTag.name);
             }
 
-            removeTagsFromServer(t, nicTags, ctx.headnode, function (err, job) {
-                t.ifError(err, 'remove NIC tags from headnode server: '
+            removeTagsFromServer(t, nicTags, ctx.server, function (err, job) {
+                t.ifError(err, 'remove NIC tags from server: '
                     + nicTags);
 
                 waitForJob(CLIENT, job.job_uuid, function (err2) {
@@ -300,10 +286,10 @@ function createFixtures(t, cb) {
             });
         },
 
-        function getHeadnode(_, next) {
-            common.getHeadnode(CLIENT, function (err, headnode) {
-                t.ifError(err, 'getHeadnode');
-                fixtures.headnode = headnode;
+        function getATestServer(_, next) {
+            common.getTestServer(CLIENT, function (err, testServer) {
+                t.ifError(err, 'getTestServer');
+                fixtures.server = testServer;
                 next();
             });
         },
@@ -313,14 +299,13 @@ function createFixtures(t, cb) {
 
             /*
              * If we created an 'internal' network above, we'll need to add
-             * that NIC tag to the server to which we will provision
-             * (i.e. the headnode)
+             * that NIC tag to the server to which we will provision.
              */
             if (fixtures.internal) {
                 nicTags.push(fixtures.internal.nicTag.name);
             }
 
-            addNicTagsToServer(t, nicTags, fixtures.headnode,
+            addNicTagsToServer(t, nicTags, fixtures.server,
                     function (err, job) {
                 t.ifError(err);
                 waitForJob(CLIENT, job.job_uuid, function (err2) {
@@ -342,7 +327,7 @@ function createFixtures(t, cb) {
                     image: image.id,
                     package: SDC_128.name,
                     name: FIXTURE_DATA.inst.name,
-                    server_uuid: fixtures.headnode.uuid,
+                    server_uuid: fixtures.server.uuid,
                     firewall_enabled: true
                 };
                 machinesCommon.createMachine(t, CLIENT, obj,
@@ -651,8 +636,36 @@ function verifyUnchangedNics(t, mutator) {
                 belongs_to_type: 'zone'
             }, function (err2, newNics) {
                 t.ifError(err2, 'NAPI ListNics for newNics');
-                t.deepEqual(sortNics(origNics), sortNics(newNics),
-                    'origNics and newNics should be the same');
+
+                /*
+                 * Ignore some useless fields:
+                 * - The 'state' property of NICs isn't currently useful for
+                 *   anything. When a NIC is created in NAPI it is typically
+                 *   set to state=provisioning. After that, net-agent will
+                 *   asynchronously set it to 'running' or 'stopped' depending
+                 *   on the VM state. There is also a reference to updating
+                 *   nic.state in sdc-vmapi.git -- but that looks like unused
+                 *   code.
+                 * - The 'modified_timestamp' is updated asynchronously which
+                 *   can break these tests. I'm not sure why that is updated.
+                 *   Perhaps a no-op UpdateNic from net-agent.
+                 *
+                 * Because those changes are asynchronous, it is difficult and
+                 * obtuse to wait for nic state settling for testing. Therefore
+                 * we will just skip comparison of those fields.
+                 */
+                var dropAsyncUpdatedNicProps = function (nic) {
+                    delete nic.modified_timestamp;
+                    delete nic.state;
+                };
+                origNics.forEach(dropAsyncUpdatedNicProps);
+                newNics.forEach(dropAsyncUpdatedNicProps);
+
+                var changes = findObjectArrayChanges(origNics, newNics, 'mac');
+                t.equal(changes.length, 0,
+                    'origNics and newNics should be the same: differing NICs: '
+                        + JSON.stringify(changes));
+
                 t.end();
             });
         });
@@ -660,10 +673,39 @@ function verifyUnchangedNics(t, mutator) {
 }
 
 
-function sortNics(nics) {
-    return nics.sort(function (a, b) {
-        return (a.mac > b.mac) ? 1 : -1;
+/*
+ * Return an array of "change" objects:
+ *      {"original": <object from oldArr>, "modified": <object from newArr>}
+ * for each differing object (identified by the `key` field).
+ *
+ * Limitation: This assumes keys on the objects being compared are in the same
+ * order. This suffices for NIC objects from NAPI.
+ */
+function findObjectArrayChanges(oldArr, newArr, key) {
+    var oldArrLookup = {};
+    oldArr.forEach(function (oldObj) {
+        var val = oldObj[key];
+        oldArrLookup[val] = oldObj;
     });
+
+    var changes = [];
+
+    newArr.forEach(function (newObj) {
+        var val = newObj[key];
+        var oldObj = oldArrLookup[val];
+
+        if (!oldObj || JSON.stringify(newObj) !== JSON.stringify(oldObj)) {
+            changes.push({ original: oldObj, modified: newObj });
+        }
+
+        delete oldArrLookup[val];
+    });
+
+    Object.keys(oldArrLookup).forEach(function (name) {
+        changes.push({ original: oldArrLookup[name], modified: null});
+    });
+
+    return changes;
 }
 
 
@@ -857,6 +899,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.otherVm.uuid + '/nics';
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -875,6 +919,8 @@ test('nics', function (tt) {
         var path = '/my/machines/fdc3cefd-1943-4050-ba59-af5680508481/nics';
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -893,6 +939,8 @@ test('nics', function (tt) {
         var path = '/my/machines/wowzers/nics';
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'Invalid Parameters',
             statusCode: 409,
             restCode: 'ValidationFailed',
@@ -958,6 +1006,8 @@ test('nics', function (tt) {
         // the err message must match the 'Get non-owner NIC from owner machine'
         // test below
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'nic not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -976,6 +1026,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.instId + '/nics/wowzers';
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'mac has invalid format',
             statusCode: 409,
             restCode: 'InvalidArgument',
@@ -995,6 +1047,8 @@ test('nics', function (tt) {
         var path = '/my/machines/wowzers/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'Invalid Parameters',
             statusCode: 409,
             restCode: 'ValidationFailed',
@@ -1019,6 +1073,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.otherVm.uuid + '/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1039,6 +1095,8 @@ test('nics', function (tt) {
 
         // the err message must match the 'Get nonexistent NIC' test above
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'nic not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1058,6 +1116,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.otherVm.uuid + '/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1076,6 +1136,8 @@ test('nics', function (tt) {
         var path = '/my/machines/fa9e18e4-654a-43a8-918b-cce04bdbf461/nics/'
             + instNic.mac.replace(/\:/g, '');
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1160,6 +1222,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.otherNetwork.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'owner cannot provision on network',
             statusCode: 403,
             restCode: 'NotAuthorized',
@@ -1179,6 +1243,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.networks[0].network.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1198,6 +1264,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.otherNetwork.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1218,6 +1286,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.networks[1].network.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'Server does not support that network',
             statusCode: 409,
             restCode: 'InvalidArgument',
@@ -1237,6 +1307,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.networks[1].pool.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'Server does not support that network',
             statusCode: 409,
             restCode: 'InvalidArgument',
@@ -1256,6 +1328,8 @@ test('nics', function (tt) {
         var args = { network: 'wowzers' };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'network argument has invalid format',
             statusCode: 409,
             restCode: 'InvalidArgument',
@@ -1275,6 +1349,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.networks[0].network.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'Invalid Parameters',
             statusCode: 409,
             restCode: 'ValidationFailed',
@@ -1299,6 +1375,8 @@ test('nics', function (tt) {
         var args = { network: '05cab1d4-f816-41c0-b45f-a4ffeda5a6b5' };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'network not found',
             statusCode: 409,
             restCode: 'InvalidArgument',
@@ -1318,6 +1396,8 @@ test('nics', function (tt) {
         var args = { network: fixtures.networks[0].network.uuid };
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1337,6 +1417,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.otherVm.uuid + '/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1356,6 +1438,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.instId + '/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'nic not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1375,6 +1459,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.otherVm.uuid + '/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'VM not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1393,6 +1479,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.instId + '/nics/wowzers';
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'mac has invalid format',
             statusCode: 409,
             restCode: 'InvalidArgument',
@@ -1412,6 +1500,8 @@ test('nics', function (tt) {
         var path = '/my/machines/wowzers/nics/' + mac;
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'Invalid Parameters',
             statusCode: 409,
             restCode: 'ValidationFailed',
@@ -1435,6 +1525,8 @@ test('nics', function (tt) {
         var path = '/my/machines/' + fixtures.instId + '/nics/012345678901';
 
         var expectedErr = {
+            jse_info: {},
+            jse_shortmsg: '',
             message: 'nic not found',
             statusCode: 404,
             restCode: 'ResourceNotFound',
@@ -1533,7 +1625,8 @@ test('nics', function (tt) {
         deleteFixtures(t, fixtures, function (err) {
             t.ifError(err, 'deleteFixtures');
 
-            common.teardown(CLIENTS, CLOUDAPI_SERVER, function () {
+            common.teardown(CLIENTS, CLOUDAPI_SERVER, function (err2) {
+                t.ifError(err2, 'teardown success');
                 t.end();
             });
         });

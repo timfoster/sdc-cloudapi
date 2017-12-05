@@ -25,7 +25,7 @@ var checkMachine = machinesCommon.checkMachine;
 var SDC_128 = common.sdc_128_package;
 
 var PROVISIONABLE_NET_UUID;
-var HEADNODE_UUID;
+var SERVER_UUID;
 var IMAGE_UUID;
 
 var ROLE_NAME;
@@ -64,10 +64,10 @@ test('setup', function (t) {
 });
 
 
-test('Get Headnode', function (t) {
-    common.getHeadnode(CLIENT, function (err, headnode) {
+test('Get test server', function (t) {
+    common.getTestServer(CLIENT, function (err, testServer) {
         t.ifError(err);
-        HEADNODE_UUID = headnode.uuid;
+        SERVER_UUID = testServer.uuid;
         t.end();
     });
 });
@@ -103,7 +103,7 @@ test('CreateMachine', function (t) {
         image: IMAGE_UUID,
         package: SDC_128.name,
         name: 'a' + uuid().substr(0, 7),
-        server_uuid: HEADNODE_UUID,
+        server_uuid: SERVER_UUID,
         firewall_enabled: true
     };
 
@@ -189,7 +189,7 @@ test('7.3 networks format should fail', function (t) {
         package: SDC_128.name,
         name: 'a' + uuid().substr(0, 7),
         networks: [ { ipv4_uuid: PROVISIONABLE_NET_UUID, ipv4_count: 1 } ],
-        server_uuid: HEADNODE_UUID
+        server_uuid: SERVER_UUID
     };
 
     CLIENT.post({
@@ -304,7 +304,7 @@ test('sub-user tests', function (t) {
                 image: IMAGE_UUID,
                 package: SDC_128.name,
                 name: 'a' + uuid().substr(0, 7),
-                server_uuid: HEADNODE_UUID,
+                server_uuid: SERVER_UUID,
                 firewall_enabled: true
             };
 
@@ -388,6 +388,7 @@ test('sub-user tests', function (t) {
     });
 });
 
+
 test('Add submachine role-tag', function (t) {
     CLIENT.put({
         path: '/' + ACCOUNT_NAME + '/machines/' + SUB_MACHINE_UUID,
@@ -402,6 +403,23 @@ test('Add submachine role-tag', function (t) {
         t.ok(body['role-tag']);
         t.ok(Array.isArray(body['role-tag']));
         t.equal(body['role-tag'][0], ROLE_NAME);
+        t.end();
+    });
+});
+
+
+test('Verify submachine role-tag', function (t) {
+    CLIENT.get({
+        path: '/' + ACCOUNT_NAME + '/machines/' + SUB_MACHINE_UUID,
+        headers: {
+            'accept-version': '~7.2',
+            'role-tag': true
+        }
+    }, function (err, req, res, body) {
+        t.ifError(err);
+        t.equal(res.statusCode, 200);
+        t.ok(res.headers['role-tag'], 'resource role-tag header');
+        t.equal(res.headers['role-tag'], ROLE_NAME, 'resource role-tag');
         t.end();
     });
 });
@@ -438,8 +456,17 @@ test('Delete sub-user machine tests', function (t) {
 });
 
 
+test('cleanup resources', function (t) {
+    common.deleteResources(CLIENT, function (err) {
+        t.ifError(err);
+        t.end();
+    });
+});
+
+
 test('teardown', function (t) {
-    common.teardown(CLIENTS, SERVER, function () {
+    common.teardown(CLIENTS, SERVER, function (err) {
+        t.ifError(err, 'teardown success');
         t.end();
     });
 });

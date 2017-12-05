@@ -33,7 +33,10 @@ TAP		:= ./node_modules/.bin/tape
 DOC_FILES	 = index.md admin.md dev.md
 RESTDOWN_FLAGS   = --brand-dir=deps/restdown-brand-remora
 EXTRA_DOC_DEPS += deps/restdown-brand-remora/.git
-JS_FILES	:= $(shell ls *.js) $(shell find lib -maxdepth 1 -name '*.js') \
+# We explicitly don't want to lint node-http-signature, as it's an external
+# repository that is exceptionally bundled in this repo to ensure backward
+# compatibilty when handling different signature formats.
+JS_FILES	:= $(shell ls *.js) $(shell find lib -name '*.js' | grep -v node-http-signature) \
 	$(shell find test -name '*.js') $(shell find bench -name '*.js') \
 	$(shell find plugins -name '*.js') \
 	$(shell find test -name '*.javascript')
@@ -47,18 +50,21 @@ CLEAN_FILES	+= node_modules cscope.files
 
 # The prebuilt sdcnode version we want. See
 # "tools/mk/Makefile.node_prebuilt.targ" for details.
-NODE_PREBUILT_VERSION=v4.7.3
+NODE_PREBUILT_VERSION=v4.8.5
 ifeq ($(shell uname -s),SunOS)
 	NODE_PREBUILT_IMAGE=18b094b0-eb01-11e5-80c1-175dac7ddf02
 	NODE_PREBUILT_TAG=zone
+else
+	NPM=npm
+	NODE=node
+	NPM_EXEC=$(shell which npm)
+	NODE_EXEC=$(shell which node)
 endif
 
 
 include ./tools/mk/Makefile.defs
 ifeq ($(shell uname -s),SunOS)
 	include ./tools/mk/Makefile.node_prebuilt.defs
-else
-	include ./tools/mk/Makefile.node.defs
 endif
 include ./tools/mk/Makefile.smf.defs
 
@@ -222,8 +228,6 @@ plugins_test: provision_limits_plugin_test
 include ./tools/mk/Makefile.deps
 ifeq ($(shell uname -s),SunOS)
 	include ./tools/mk/Makefile.node_prebuilt.targ
-else
-	include ./tools/mk/Makefile.node.targ
 endif
 include ./tools/mk/Makefile.smf.targ
 include ./tools/mk/Makefile.targ

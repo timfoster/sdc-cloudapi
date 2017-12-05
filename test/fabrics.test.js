@@ -5,26 +5,23 @@
  */
 
 /*
- * Copyright (c) 2015, Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 var assert = require('assert-plus');
 var clone = require('clone');
 var fmt = require('util').format;
-var common = require('./common');
 var test = require('tape').test;
 var vasync = require('vasync');
+
+var common = require('./common');
+var mod_testNetworks = require('./lib/networks');
 
 var checkNotFound = common.checkNotFound;
 
 
 // --- Globals
 
-
-// How often to poll for VLAN / networks:
-var CHECK_INTERVAL = 500;
-// Maximum
-var CHECK_TIMEOUT = 30000;
 var CLIENT;
 var OTHER;
 var CLIENTS;
@@ -109,7 +106,8 @@ function afterFindInList(t, legitUuids, params, callback, err, req, res, body) {
 
     body.forEach(function (net) {
         t.notEqual(legitUuids.indexOf(net.id), -1,
-            'cloudapi net listing contains networks it should not');
+            fmt('network %s from CloudAPI network listing is in legitUuids: %j',
+                net.id, legitUuids));
 
         if (net.name === params.name) {
             found = net;
@@ -171,6 +169,77 @@ function checkDefaultNet(t, net) {
     };
 
     CLIENT.get('/my/config', checkConfig.bind(null, t, params));
+}
+
+
+/**
+ * Temporarily remove dclocalconfig before invoking testFunc(). Add it back when
+ * done.
+ */
+function withoutDcLocalConfig(testFunc, cb) {
+    var accountUuid = CLIENT.account.uuid;
+    var dc = CLIENT.datacenter;
+    var ufds = CLIENT.ufds;
+    var config;
+
+    var pollGoneCount = 20;
+    var pollPresentCount = 20;
+    var pollInterval = 500; // in ms
+
+    vasync.pipeline({ funcs: [
+        function getConf(_, next) {
+            ufds.getDcLocalConfig(accountUuid, dc, function (err, _config) {
+                config = _config;
+                next(err);
+            });
+        },
+        function deleteConf(_, next) {
+            ufds.deleteDcLocalConfig(accountUuid, dc, next);
+        },
+        function pollConfGone(_, next) {
+            --pollGoneCount;
+            if (pollGoneCount === 0) {
+                next(new Error('dclocalconfig took too long to remove'));
+                return;
+            }
+
+            ufds.getDcLocalConfig(accountUuid, dc, function (err) {
+                if (err) {
+                    next(err.restCode === 'ResourceNotFound' ? null : err);
+                    return;
+                }
+
+                setTimeout(pollConfGone.bind(null, _, next), pollInterval);
+            });
+        },
+        function runTestFunc(_, next) {
+            testFunc(null, next);
+        },
+        function addConf(_, next) {
+            ufds.addDcLocalConfig(accountUuid, dc, config, next);
+        },
+        function pollConfPresent(_, next) {
+            --pollPresentCount;
+            if (pollPresentCount === 0) {
+                next(new Error('dclocalconfig took too long to return'));
+                return;
+            }
+
+            ufds.getDcLocalConfig(accountUuid, dc, function (err) {
+                if (err) {
+                    if (err.restCode === 'ResourceNotFound') {
+                        setTimeout(pollConfPresent.bind(null, _, next),
+                            pollInterval);
+                    } else {
+                        next(err);
+                    }
+                    return;
+                }
+
+                next();
+            });
+        }
+    ]}, cb);
 }
 
 
@@ -268,7 +337,8 @@ function findVLANinList(t, params, callback) {
                 // check, since VLANs from different owners can have the same
                 // ids
                 t.notEqual(viewableIds.indexOf(vlan.vlan_id), -1,
-                    'cloudapi vlan listing contains vlans it should not');
+                    fmt('VLAN %s from CloudAPI VLAN listing is in '
+                        + 'viewableIds: %j', vlan.vlan_id, viewableIds));
 
                 if (vlan.name === params.name) {
                     t.deepEqual(vlan, params, 'params');
@@ -292,7 +362,8 @@ function findVLANinList(t, params, callback) {
 function getViewableUuids(t, nets, accountUuid) {
     var viewableUuids = nets.filter(function (net) {
         if (net.owner_uuids && net.owner_uuids.indexOf(accountUuid) === -1) {
-            t.ok(false, 'napi listing contains networks it should not');
+            t.ok(false, fmt('account %s is in network %s "owner_uuids": %j',
+                accountUuid, net.uuid, net.owner_uuids));
             return false;
         }
         return true;
@@ -334,34 +405,6 @@ function tooLongMsg(prop) {
 function typeMsg(prop, found, exp) {
     return fmt('property "%s": %s value found, but a %s is required',
             prop, found, exp);
-}
-
-
-/**
- * Poll for the creation of the default VLAN
- */
-function waitForDefaultVLAN(t) {
-    var start = Date.now();
-    t.pass('Waiting for default fabric VLAN to be created...');
-
-    function _checkVlan() {
-        CLIENT.get('/my/fabrics/default/vlans/2',
-                function (err, req, res, body) {
-            if (body && body.vlan_id) {
-                t.pass('found default vlan');
-                return t.end();
-            }
-
-            if ((Date.now() - start) > CHECK_TIMEOUT) {
-                t.pass('did not found default vlan before timeout');
-                return t.end();
-            }
-
-            return setTimeout(_checkVlan, CHECK_INTERVAL);
-        });
-    }
-
-    _checkVlan();
 }
 
 
@@ -931,7 +974,7 @@ test('default fabric', TEST_OPTS, function (tt) {
 
     // The default vlan for a user is created
     tt.test('wait for default VLAN creation', function (t) {
-        waitForDefaultVLAN(t);
+        mod_testNetworks.waitForDefaultVLAN(CLIENT, t);
     });
 
 
@@ -989,7 +1032,6 @@ test('default fabric', TEST_OPTS, function (tt) {
             t.end();
         });
     });
-
 
 
     tt.test('confirm default network change', function (t) {
@@ -1058,6 +1100,40 @@ test('default fabric', TEST_OPTS, function (tt) {
         changeDefaultNet(t, DEFAULT_NET);
     });
 
+
+    tt.test('attempt to GET/PUT a config when missing dclocalconfig',
+    function (t) {
+        if (!DEFAULT_NET) {
+            t.fail('default vlan not found: skipping test');
+            t.end();
+            return;
+        }
+
+        withoutDcLocalConfig(function (_, next) {
+            CLIENT.get('/my/config', function (err, req, res, config) {
+                t.ifError(err, 'GET Error');
+                t.equal(res.statusCode, 200, 'GET status');
+
+                t.deepEqual(config, {});
+
+                CLIENT.put('/my/config', {
+                    default_network: DEFAULT_NET.id
+                }, function (err2, req2, res2, body) {
+                    t.ok(err2, 'PUT Error expected');
+                    t.equal(res2.statusCode, 500, 'PUT status');
+                    t.deepEqual(body, {
+                        code: 'InternalError',
+                        message: 'Config currently unavailable.'
+                    });
+
+                    next();
+                });
+            });
+        }, function (err) {
+            t.ifError(err, 'Error while running without dclocalconfig');
+            t.end();
+        });
+    });
 });
 
 
@@ -1072,7 +1148,7 @@ test('teardown', TEST_OPTS, function (tt) {
         function _delNet(net, cb) {
             CLIENT.del(fmt('/my/fabrics/default/vlans/%d/networks/%s',
                     net.vlan_id, net.id), function (err, req, res, body) {
-                t.ifErr(err, 'delete network');
+                t.ifErr(err, 'delete network ' + net.id);
 
                 t.equal(res.statusCode, 204, 'delete fabric network');
                 common.checkHeaders(t, res.headers);
@@ -1121,7 +1197,8 @@ test('teardown', TEST_OPTS, function (tt) {
     });
 
     tt.test('client and server teardown', function (t) {
-        common.teardown(CLIENTS, SERVER, function () {
+        common.teardown(CLIENTS, SERVER, function (err) {
+            t.ifError(err, 'teardown success');
             t.end();
         });
     });

@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright (c) 2016, Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
@@ -24,16 +24,16 @@ var path = require('path');
 var bunyan = require('bunyan');
 var nopt = require('nopt');
 var restify = require('restify');
+var auditLogger = require('./lib/audit_logger');
 var RequestCaptureStream = restify.bunyan.RequestCaptureStream;
 var tritonTracer = require('triton-tracer');
 
 var app = require('./lib').app;
-
+var modConfig = require('./lib/config.js');
 
 
 // --- Globals
 
-var DEFAULT_CFG = __dirname + '/etc/cloudapi.config.json';
 var LOG;
 var PARSED;
 
@@ -108,67 +108,19 @@ function usage(code, message) {
 }
 
 
-function configure(file, options, log) {
-    assert.string(file, 'file');
-    assert.object(options, 'options');
-    assert.object(log, 'log');
-    var config;
-
-    try {
-        config = JSON.parse(fs.readFileSync(file, 'utf8'));
-
-        if (config.certificate && config.key && !config.port) {
-            config.port = 443;
-        }
-
-        if (!config.port) {
-            config.port = 80;
-        }
-
-    } catch (e1) {
-        console.error('Unable to parse %s: %s', file, e1.message);
-        process.exit(1);
-    }
-
-    if (options.port) {
-        config.port = options.port;
-    }
-
-    try {
-        if (config.certificate) {
-            config.certificate = fs.readFileSync(config.certificate, 'utf8');
-        }
-    } catch (e2) {
-        console.error('Unable to load %s: %s', config.certificate, e2.message);
-        process.exit(1);
-    }
-
-    try {
-        if (config.key) {
-            config.key = fs.readFileSync(config.key, 'utf8');
-        }
-    } catch (e3) {
-        console.error('Unable to load %s: %s', config.certificate, e3.message);
-        process.exit(1);
-    }
-
-    if (typeof (config.maxHttpSockets) === 'number') {
-        log.info('Tuning max sockets to %d', config.maxHttpSockets);
-        http.globalAgent.maxSockets = config.maxHttpSockets;
-        https.globalAgent.maxSockets = config.maxHttpSockets;
-    }
-
-    return config;
-}
-
-
 // Create a temporary server which simply returns 500 to all requests
-function createBootstrapServer(port, cb) {
-    var bootstrapServer = restify.createServer();
+function createBootstrapServer(port, log, cb) {
+    var bootstrapServer = restify.createServer({ log: log });
     bootstrapServer.use(restify.fullResponse());
 
+    bootstrapServer.on('after', auditLogger({
+        log: log.child({ component: 'bootstrap' })
+    }));
+
     function bootstrapHandler(req, res, next) {
-        res.send(new restify.InternalError('Failure to connect to Moray'));
+        var msg = 'Attempting to connect to internal services during bootstrap';
+        log.warn(msg);
+        res.send(new restify.InternalError(msg));
         next();
     }
 
@@ -196,7 +148,11 @@ function run() {
         serializers: restify.bunyan.serializers
     });
 
-    var config = configure(PARSED.file || DEFAULT_CFG, PARSED, LOG);
+    var config = modConfig.configure({
+        configFilePath: PARSED.file,
+        overrides: PARSED,
+        log: LOG
+    });
 
     setupLogger(config);
     config.log = LOG;
@@ -216,7 +172,7 @@ function run() {
     // listening due to dependencies not being available (e.g. Moray is
     // offline, so plugin configs cannot be loaded)
 
-    createBootstrapServer(config.port, function (err, bootstrapServer) {
+    createBootstrapServer(config.port, LOG, function (err, bootstrapServer) {
         if (err) {
             throw err;
         }

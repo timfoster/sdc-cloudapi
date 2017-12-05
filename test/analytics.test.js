@@ -690,6 +690,8 @@ test('DeleteInstrumentation OK', function (t) {
             t.equal(res2.statusCode, 404);
 
             t.deepEqual(err2, {
+                jse_info: {},
+                jse_shortmsg: '',
                 message: 'resource not found',
                 statusCode: 404,
                 restCode: 'ResourceNotFound',
@@ -751,7 +753,8 @@ test('DeleteInstrumentation OK - clone', function (t) {
 
 
 test('teardown', function (t) {
-    common.teardown(CLIENTS, SERVER, function () {
+    common.teardown(CLIENTS, SERVER, function (err) {
+        t.ifError(err, 'teardown success');
         t.end();
     });
 });

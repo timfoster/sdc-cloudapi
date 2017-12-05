@@ -163,6 +163,14 @@ test('search packages by name', function (t) {
 });
 
 
+test('search packages by name with wildcard', function (t) {
+    var name = SDC_512.name.slice(0, -4) + '*';
+    searchAndCheck('name=' + name, t, function (pkg) {
+        t.equal(pkg.name, SDC_512.name);
+    });
+});
+
+
 test('search packages by memory', function (t) {
     searchAndCheck('memory=128', t, function (pkg) {
         t.equal(pkg.memory, 128);
@@ -287,7 +295,8 @@ test('teardown', function (t) {
         common.deletePackage(CLIENT, SDC_512_NO_PERMISSION, function (err2) {
             t.ifError(err2);
 
-            common.teardown(CLIENTS, SERVER, function () {
+            common.teardown(CLIENTS, SERVER, function (err3) {
+                t.ifError(err3, 'teardown success');
                 t.end();
             });
         });

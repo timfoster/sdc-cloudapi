@@ -34,24 +34,26 @@ function checkImage(t, image, path) {
     }
 
     t.ok(image, 'image object ok');
-    t.ok(image.id, 'image.id');
+    t.ok(image.id, image.id + ': image.id');
 
-    t.ok(image.name, 'image.name');
-    t.ok(image.version, 'image.version');
-    t.ok(image.type, 'image.type');
-    t.ok(image.requirements, 'image.requirements');
+    t.ok(image.name, image.id + ': image.name');
+    t.ok(image.version, image.id + ': image.version');
+    t.ok(image.type, image.id + ': image.type');
+    t.ok(image.requirements, image.id + ': image.requirements');
 
     t.notEqual(image.name, 'docker-layer',
-        'should be no listed docker-layer images');
+        image.id + ': should be no listed name="docker-layer" images');
 
     if (/\/images/.test(path)) {
-        t.equal(typeof (image.urn), 'undefined', 'image.urn');
+        t.equal(typeof (image.urn), 'undefined', image.id + ': image.urn');
     } else {
-        t.ok(image.urn, 'image.urn');
+        t.ok(image.urn, image.id + ': image.urn');
     }
 
-    t.equal(typeof (image.default), 'undefined', 'image.default');
-    t.equal(image.type, 'smartmachine');
+    t.equal(typeof (image.default), 'undefined', image.id + ': image.default');
+    t.ok(['smartmachine', 'virtualmachine'].indexOf(image.type) !== -1,
+        image.id + ': image.type is one of smartmachine or virtualmachine: '
+        + image.type);
 }
 
 
@@ -237,7 +239,8 @@ test('GetImage 404', function (t) {
 
 
 test('teardown', function (t) {
-    common.teardown(CLIENTS, SERVER, function () {
+    common.teardown(CLIENTS, SERVER, function (err) {
+        t.ifError(err, 'teardown success');
         t.end();
     });
 });

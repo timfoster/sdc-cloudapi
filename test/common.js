@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright 2016 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
@@ -30,6 +30,7 @@ var NAPI = require('sdc-clients').NAPI;
 var IMGAPI = require('sdc-clients').IMGAPI;
 var PAPI = require('sdc-clients').PAPI;
 var MAHI = require('mahi');
+var VOLAPI = require('sdc-clients').VOLAPI;
 
 var app = require('../lib').app;
 var apertureConfig = require('aperture-config').config;
@@ -167,6 +168,18 @@ function _imgapi() {
     });
 }
 
+function _joyentImgapi() {
+    return new IMGAPI({
+        url: 'https://images.joyent.com/',
+        retry: {
+            retries: 1,
+            minTimeout: 1000
+        },
+        log: LOG,
+        agent: false
+    });
+}
+
 
 function _papi() {
     return PAPI({
@@ -207,25 +220,111 @@ function _ufds() {
     });
 }
 
+function _volapi() {
+    return new VOLAPI({
+        version: '^1',
+        userAgent: 'cloudapi-tests',
+        url: process.env.VOLAPI_URL || CONFIG.volapi.url ||
+            'http://10.99.99.41',
+        retry: {
+            retries: 1,
+            minTimeout: 1000
+        },
+        log: LOG,
+        agent: false
+    });
+}
 
-function clientTeardown(client, cb) {
+/*
+ * Destroy all data associated with a client.
+ */
+function clientDataTeardown(client, cb) {
+    assert.object(client, 'client');
+    assert.func(cb, 'callback');
+
+    var ufds = client.ufds;
+    var dc = CONFIG.datacenter_name;
+    var account = client.account;
+    var id = account.uuid;
+    var sub = account.account; // has parent account UUID if this acc a subuser
+
+    var pollDelay = 500; // in ms
+
+    ufds.deleteKey(account, 'id_rsa', function deleteKeyCb(err) {
+        if (err) {
+            cb(err);
+            return;
+        }
+
+        pollKeyDeletion();
+    });
+
+    var pollKeyCount = 10;
+    function pollKeyDeletion() {
+        --pollKeyCount;
+        if (pollKeyCount === 0) {
+            cb(new Error('Key failed to delete in time'));
+            return;
+        }
+
+        ufds.getKey(account, 'id_rsa', function getKeyCb(err) {
+            if (err) {
+                if (err.restCode !== 'ResourceNotFound') {
+                    cb(err);
+                    return;
+                }
+
+                if (!sub) {
+                    pollConfigDeletion();
+                } else {
+                    ufds.deleteUser(account, cb);
+                }
+                return;
+            }
+
+            setTimeout(pollKeyDeletion, pollDelay);
+        });
+    }
+
+    var pollConfigCount = 10;
+    function pollConfigDeletion(err) {
+        --pollConfigCount;
+        if (pollConfigCount === 0) {
+            cb(new Error('Config failed to delete in time'));
+            return;
+        }
+
+        ufds.deleteDcLocalConfig(id, dc, function delConfigCb(err2) {
+            if (err2) {
+                if (err2.restCode !== 'ResourceNotFound') {
+                    cb(err2);
+                } else {
+                    ufds.deleteUser(account, cb);
+                }
+                return;
+            }
+
+            setTimeout(pollConfigDeletion, pollDelay);
+        });
+    }
+}
+
+
+/*
+ * Close all client connections.
+ */
+function clientClose(client, cb) {
+    assert.object(client, 'client');
+    assert.func(cb, 'callback');
+
     client.close();
     client.mahi.close();
 
     var ufds = client.ufds;
-
-    // we ignore errors until the end and try to clean up as much as possible
-    ufds.deleteKey(client.login, 'id_rsa', function (err) {
-        ufds.deleteUser(client.login, function (err2) {
-            ufds.client.removeAllListeners('close');
-            ufds.client.removeAllListeners('timeout');
-            ufds.removeAllListeners('timeout');
-
-            ufds.close(function () {
-                return cb(err || err2);
-            });
-        });
-    });
+    ufds.client.removeAllListeners('close');
+    ufds.client.removeAllListeners('timeout');
+    ufds.removeAllListeners('timeout');
+    ufds.close(cb);
 }
 
 
@@ -349,6 +448,7 @@ function setupClient(version, serverUrl, user, keyId, keyPath, parentAcc, cb) {
     client.login = user;
     client.passwd = PASSWD;
     client.keyId = keyId;
+    client.datacenter = CONFIG.datacenter_name;
 
     // Create clients to all the APIs
     client.wfapi  = _wfapi();
@@ -356,9 +456,13 @@ function setupClient(version, serverUrl, user, keyId, keyPath, parentAcc, cb) {
     client.cnapi  = _cnapi();
     client.napi   = _napi();
     client.imgapi = _imgapi();
+    client.joyentImgapi = _joyentImgapi();
     client.papi   = _papi();
     client.mahi   = _mahi();
     client.ufds   = _ufds();
+    if (CONFIG.experimental_cloudapi_nfs_shared_volumes === true) {
+        client.volapi = _volapi();
+    }
 
     var ufds = client.ufds;
 
@@ -442,6 +546,46 @@ function waitForMahiCache(mahiclient, apath, cb) {
 
         return cb(null, res);
     });
+}
+
+
+function waitForAccountConfigReady(client, cb) {
+    assert.object(client, 'client');
+    assert.func(cb, 'callback');
+
+    if (!CONFIG.fabrics_enabled) {
+        cb();
+        return;
+    }
+
+    var nbTries = 0;
+    var MAX_NB_TRIES = 20;
+    var TRY_DELAY_IN_MS = 1000;
+
+    function getConfig() {
+        ++nbTries;
+        if (nbTries >= MAX_NB_TRIES) {
+            cb(new Error('max number of tries reached'));
+            return;
+        }
+
+        client.get('/my/config', function onGetConfig(err, req, res, config) {
+            if (err) {
+                cb(err);
+                return;
+            }
+
+            if (config.default_network) {
+                cb();
+            } else {
+                setTimeout(getConfig, TRY_DELAY_IN_MS);
+            }
+
+            return;
+        });
+    }
+
+    getConfig();
 }
 
 
@@ -595,6 +739,12 @@ function setup(opts, cb) {
         },
         function setupPackage(_, next) {
             addPackage(userClient, SDC_128_PACKAGE, next);
+        },
+        function waitUserClientConfig(_, next) {
+            waitForAccountConfigReady(userClient, next);
+        },
+        function waitOtherUserClientConfig(_, next) {
+            waitForAccountConfigReady(otherUserClient, next);
         }
     ] }, function (err) {
         if (err) {
@@ -618,9 +768,9 @@ function setup(opts, cb) {
 
 
 function teardown(clients, server, cb) {
-    assert.object(clients);
-    assert.object(server);
-    assert.func(cb);
+    assert.object(clients, 'clients');
+    assert.object(server, 'server');
+    assert.func(cb, 'callback');
 
     var userClient      = clients.user;
     var subUserClient   = clients.subuser;
@@ -629,21 +779,40 @@ function teardown(clients, server, cb) {
     var ufds    = userClient.ufds;
     var accUuid = userClient.account.uuid;
 
-    // XXX No! Don't ignore errors. Fix this to handle errors.
-    // ignore all errors; try to clean up as much as possible
-    ufds.deleteRole(accUuid, userClient.role.uuid, function () {
-        ufds.deletePolicy(accUuid, userClient.policy.uuid, function () {
-            deletePackage(userClient, SDC_128_PACKAGE, function () {
-                clientTeardown(subUserClient, function () {
-                    clientTeardown(userClient, function () {
-                        clientTeardown(otherUserClient, function () {
-                            if (server.close) {
-                                server.close(cb);
-                            } else {
-                                cb();
-                            }
-                        });
-                    });
+    vasync.pipeline({ funcs: [
+        function (_, next) {
+            ufds.deleteRole(accUuid, userClient.role.uuid, next);
+        },
+        function (_, next) {
+            ufds.deletePolicy(accUuid, userClient.policy.uuid, next);
+        },
+        function (_, next) {
+            deletePackage(userClient, SDC_128_PACKAGE, next);
+        },
+        function (_, next) {
+            clientDataTeardown(subUserClient, next);
+        },
+        function (_, next) {
+            clientDataTeardown(userClient, next);
+        },
+        function (_, next) {
+            clientDataTeardown(otherUserClient, next);
+        }
+    ]}, function teardownCb(err) {
+        // we defer errors here to finish(), because otherwise it's likely
+        // we'll hang
+        clientClose(subUserClient, function (err2) {
+            clientClose(userClient, function (err3) {
+                clientClose(otherUserClient, function (err4) {
+                    function finish(err5) {
+                        cb(err || err2 || err3 || err4 || err5);
+                    }
+
+                    if (server.close) {
+                        server.close(finish);
+                    } else {
+                        finish();
+                    }
                 });
             });
         });
@@ -699,17 +868,49 @@ function deletePackage(client, pkg, cb) {
 }
 
 
-function getHeadnode(client, cb) {
-    client.cnapi.listServers({ extras: 'sysinfo' }, function (err, servers) {
+function deleteResources(client, cb) {
+    var id = client.account.uuid;
+
+    client.ufds.listResources(id, function listResourcesCb(err, resources) {
         if (err) {
-            return err;
+            cb(err);
+            return;
         }
 
-        var headnode = servers.filter(function (s) {
-            return s.headnode;
-        })[0];
+        vasync.forEachPipeline({
+            inputs: resources,
+            func: function (resource, next) {
+                client.ufds.deleteResource(id, resource.uuid, next);
+            }
+        }, cb);
+    });
+}
 
-        return cb(null, headnode);
+
+/*
+ * Find a server to use for test provisions. We'll just use a running headnode
+ * (the simple case that works for COAL). Limitation: This assumes headnode
+ * provisioning is enabled (e.g. via 'sdcadm post-setup dev-headnode-prov').
+ */
+function getTestServer(client, cb) {
+    client.cnapi.listServers({
+        headnode: true,
+        extras: 'sysinfo'
+    }, function (err, servers) {
+        if (err) {
+            cb(err);
+            return;
+        }
+
+        var runningHeadnodes = servers.filter(function (s) {
+            return s.status === 'running';
+        });
+
+        if (runningHeadnodes.length === 0) {
+            cb(new Error('could not find a test server'));
+        } else {
+            cb(null, runningHeadnodes[0]);
+        }
     });
 }
 
@@ -847,7 +1048,6 @@ function napiDeleteNicTagByName(opts, cb) {
     });
 }
 
-
 // --- Library
 
 
@@ -870,8 +1070,10 @@ module.exports = {
     uuid: uuid,
     addPackage: addPackage,
     deletePackage: deletePackage,
-    getHeadnode: getHeadnode,
+    getTestServer: getTestServer,
     getTestImage: getTestImage,
+
+    deleteResources: deleteResources,
 
     // Some NAPI client conveniences
     napiDeleteNicTagByName: napiDeleteNicTagByName,

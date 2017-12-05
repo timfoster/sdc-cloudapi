@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright 2016, Joyent, Inc.
+ * Copyright 2017, Joyent, Inc.
  */
 
 var util = require('util');
@@ -17,6 +17,7 @@ var addPackage = common.addPackage;
 var checkNotFound = common.checkNotFound;
 var machinesCommon = require('./machines/common');
 var checkMachine = machinesCommon.checkMachine;
+var waitForJob = machinesCommon.waitForJob;
 
 
 // --- Globals
@@ -85,7 +86,7 @@ var SDC_512 = {
     active: true
 };
 
-var HEADNODE_UUID;
+var SERVER_UUID;
 var IMAGE_UUID;
 var MACHINE_UUID;
 
@@ -141,10 +142,10 @@ test('setup', function (t) {
 });
 
 
-test('Get Headnode', function (t) {
-    common.getHeadnode(CLIENT, function (err, headnode) {
+test('Get test server', function (t) {
+    common.getTestServer(CLIENT, function (err, testServer) {
         t.ifError(err);
-        HEADNODE_UUID = headnode.uuid;
+        SERVER_UUID = testServer.uuid;
         t.end();
     });
 });
@@ -177,7 +178,7 @@ test('Create machine with inactive package', function (t) {
         image: IMAGE_UUID,
         package: SDC_256_INACTIVE.name,
         name: 'a' + uuid().substr(0, 7),
-        server_uuid: HEADNODE_UUID
+        server_uuid: SERVER_UUID
     };
 
     CLIENT.post('/my/machines', obj, function (err, req, res, body) {
@@ -201,7 +202,7 @@ test('Create machine with os mismatch', function (t) {
         image: IMAGE_UUID,
         package: SDC_128_LINUX.name,
         name: 'a' + uuid().substr(0, 7),
-        server_uuid: HEADNODE_UUID,
+        server_uuid: SERVER_UUID,
         firewall_enabled: true
     };
 
@@ -235,7 +236,7 @@ test('Create machine with too many public networks', function (t) {
             image: IMAGE_UUID,
             package: SDC_256.name,
             name: 'a' + uuid().substr(0, 7),
-            server_uuid: HEADNODE_UUID,
+            server_uuid: SERVER_UUID,
             firewall_enabled: true,
             networks: networkUuids
         };
@@ -292,7 +293,7 @@ test('CreateMachine using invalid networks', function (t) {
     var obj = {
         image: IMAGE_UUID,
         package: SDC_256.name,
-        server_uuid: HEADNODE_UUID,
+        server_uuid: SERVER_UUID,
         networks: ['8180ef72-40fa-4b86-915b-803bcf96b442'] // invalid
     };
 
@@ -323,7 +324,7 @@ test('CreateMachine using network without permissions', function (t) {
     var vmDetails = {
         image: IMAGE_UUID,
         package: SDC_256.name,
-        server_uuid: HEADNODE_UUID
+        server_uuid: SERVER_UUID
     };
 
     CLIENT.napi.createNetwork(netDetails, function (err, net) {
@@ -373,7 +374,7 @@ test('Create machine with invalid locality', function (t) {
         image: IMAGE_UUID,
         package: SDC_256.name,
         name: 'a' + uuid().substr(0, 7),
-        server_uuid: HEADNODE_UUID,
+        server_uuid: SERVER_UUID,
         locality: { near: 'asdasd' }
     };
 
@@ -410,7 +411,7 @@ test('CreateMachine using image without permission', function (t) {
         var obj = {
             image: inaccessibleImage.uuid,
             package: SDC_256.name,
-            server_uuid: HEADNODE_UUID
+            server_uuid: SERVER_UUID
         };
 
         return CLIENT.post('/my/machines', obj, function (er2, req, res, body) {
@@ -446,7 +447,7 @@ test('CreateMachine without approved_for_provisioning', function (t) {
         var obj = {
             image: IMAGE_UUID,
             package: SDC_256.name,
-            server_uuid: HEADNODE_UUID
+            server_uuid: SERVER_UUID
         };
 
         httpClient.post('/my/machines', obj, function (err2, req, res, body) {
@@ -485,7 +486,7 @@ test('CreateMachine', function (t) {
             far: 'af4167f0-beda-4af9-9ae4-99d544499c14', // fake UUID
             strict: true
         },
-        server_uuid: HEADNODE_UUID,
+        server_uuid: SERVER_UUID,
         firewall_enabled: true
     };
 
@@ -941,7 +942,7 @@ test('ListMachines destroyed', function (t) {
 test('CreateMachine using query args', function (t) {
     var query = '/my/machines?image=' + IMAGE_UUID +
                 '&package=' + SDC_128.name +
-                '&server_uuid=' + HEADNODE_UUID;
+                '&server_uuid=' + SERVER_UUID;
 
     CLIENT.post(query, {}, function (err, req, res, body) {
         t.ifError(err, 'POST /my/machines error');
@@ -977,7 +978,7 @@ test('CreateMachine using multiple same networks', function (t) {
         var obj = {
             image: IMAGE_UUID,
             package: SDC_128.name,
-            server_uuid: HEADNODE_UUID,
+            server_uuid: SERVER_UUID,
             networks: [networkUuid, networkUuid, networkUuid]
         };
 
@@ -1199,12 +1200,147 @@ function (t) {
 test('Delete Docker machine', deleteMachine);
 
 
+// Test using {{shortId}} in alias
+test('CreateMachine with {{shortId}} in alias', function (t) {
+    var obj = {
+        image: IMAGE_UUID,
+        package: SDC_256.name,
+        name: 'db-{{shortId}}-1.0',
+        server_uuid: SERVER_UUID,
+        firewall_enabled: true
+    };
+
+    machinesCommon.createMachine(t, CLIENT, obj, function (_, machineUuid) {
+        MACHINE_UUID = machineUuid;
+        t.end();
+    });
+});
+
+
+test('Wait For Running {{shortId}} machine', waitForRunning);
+
+
+test('Get {{shortId}} machine', function (t) {
+    if (!MACHINE_UUID) {
+        t.notOk('no MACHINE_UUID, cannot get');
+        t.end();
+        return;
+    }
+
+    CLIENT.get('/my/machines/' + MACHINE_UUID, function (err, req, res, body) {
+        var shortId;
+
+        t.ifError(err, 'GET /my/machines error');
+
+        if (!err) {
+            // first bit of 445a0be6-016f-e232-...
+            shortId = body.id.split('-')[0];
+            t.equal(body.name, 'db-' + shortId + '-1.0',
+                'resulting alias was as expected');
+        }
+
+        t.end();
+    });
+});
+
+
+test('Delete {{shortId}} machine', deleteMachine);
+
+
+test('Create packageless machine', function (t) {
+    var ownerUuid = CLIENT.account.uuid;
+    var vmDescription = {
+        owner_uuid: ownerUuid,
+        alias: 'cloudapi-packageless-machine-test',
+        brand: 'joyent-minimal',
+        networks: [ {
+            uuid: '', // filled in below
+            primary: true
+        } ],
+        ram: 64,
+        cpu_cap: 50,
+        image_uuid: IMAGE_UUID
+    };
+
+    CLIENT.napi.listNetworks({ nic_tag: 'external' }, function (err, nets) {
+        t.ifError(err, 'listing external network');
+
+        vmDescription.networks[0].uuid = nets[0].uuid;
+
+        CLIENT.vmapi.createVm(vmDescription, function (err2, vm) {
+            t.ifError(err2, 'Creating packageless VM');
+
+            MACHINE_UUID = vm.vm_uuid;
+
+            t.end();
+        });
+    });
+});
+
+
+test('Wait for running packageless machine', waitForRunning);
+
+
+test('Remove nic from packageless machine', function (t) {
+    CLIENT.vmapi.getVm({ uuid: MACHINE_UUID }, function (err, vm) {
+        t.ifError(err, 'getting VM ' + MACHINE_UUID);
+
+        var nic = vm.nics[0];
+
+        CLIENT.vmapi.removeNics({
+            uuid: MACHINE_UUID,
+            macs: [nic.mac]
+        }, function (err2, job) {
+            t.ifError(err2, 'Removing nic ' + nic.mac);
+
+            waitForJob(CLIENT, job.job_uuid, function (err3) {
+                t.ifError(err3, 'waiting for job ' + job.job_uuid);
+                t.end();
+            });
+        });
+    });
+});
+
+
+test('ListMachines with packageless/nicless machine', function (t) {
+    CLIENT.get('/my/machines', function (err, req, res, body) {
+        t.ifError(err, 'GET /my/machines error');
+        t.equal(res.statusCode, 200, 'GET /my/machines status');
+        t.ok(Array.isArray(body), 'GET /my/machines body is array');
+        t.ok(body.length, 'GET /my/machines list is not empty');
+
+        var testVm = body.filter(function (m) {
+            return m.id === MACHINE_UUID;
+        })[0];
+
+        t.ok(testVm, 'packageless/nicless VM listed successfully');
+
+        t.end();
+    });
+});
+
+
+test('Delete packageless/nicless machine', deleteMachine);
+
+
+test('Affinity tests', function (t) {
+    var affinityTest = require('./machines/affinity');
+
+    affinityTest(t, CLIENT, OTHER, IMAGE_UUID, SDC_128.uuid, SERVER_UUID,
+        function () {
+        t.end();
+    });
+});
+
+
 test('teardown', function (t) {
-    common.deletePackage(CLIENT, SDC_256, function () {
-        common.deletePackage(CLIENT, SDC_256_INACTIVE, function () {
-            common.deletePackage(CLIENT, SDC_128_LINUX, function () {
-                common.deletePackage(CLIENT, SDC_512, function () {
-                    common.teardown(CLIENTS, SERVER, function () {
+    common.deletePackage(CLIENT, SDC_256, function (err) {
+        common.deletePackage(CLIENT, SDC_256_INACTIVE, function (err2) {
+            common.deletePackage(CLIENT, SDC_128_LINUX, function (err3) {
+                common.deletePackage(CLIENT, SDC_512, function (err4) {
+                    common.teardown(CLIENTS, SERVER, function (err5) {
+                        t.ifError(err||err2||err3||err4||err5,
+                                'teardown success');
                         t.end();
                     });
                 });

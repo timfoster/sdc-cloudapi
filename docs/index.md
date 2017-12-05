@@ -12,7 +12,7 @@ markdown2extras: tables, code-friendly
 -->
 
 <!--
-    Copyright 2016, Joyent, Inc.
+    Copyright 2017, Joyent, Inc.
 -->
 
 
@@ -800,6 +800,7 @@ request:
 415      | Unsupported Media Type   | Request was encoded in a format CloudAPI does not understand
 420      | Slow Down       | You're sending too many requests too quickly
 449      | Retry With      | Invalid Version header; try with a different Api-Version string
+500      | Internal Error  | An unexpected error occurred; see returned message for more details.
 503      | Service Unavailable      | Either there's no capacity in this datacenter, or it's in a maintenance window
 
 ### Error Responses
@@ -837,27 +838,100 @@ range, they can leverage the codes above.
 
 # API Versions
 
+A CloudAPI endpoint has two relevant version values: the code version and the
+"API version". The former includes the full `major.minor.patch` version value
+of the deployed server and, as of CloudAPI v8.3.0, is available in the "Server"
+header of all responses:
+
+    Server: cloudapi/8.3.1
+
+The *API* version is only changed for major versions, e.g. API version "8.0.0"
+is used for all 8.x code versions. (Older CloudAPI v7 would bump the API version
+at the minor version level.)
+
 All requests to CloudAPI must specify an acceptable API [version
 range](https://github.com/npm/node-semver#ranges) via the 'Accept-Version' (or
 for backward compatibility the 'Api-Version') header. For example:
 
     Accept-Version: ~8              // accept any 8.x version
-    Accept-Version: 7.1.0           // require exactly this version
+    Accept-Version: 7.0.0           // require exactly this version
     Accept-Version: ~8||~7          // accept 8.x or 7.x
-    Accept-Version: *               // wild west
+    Accept-Version: *               // the latest version (wild west)
 
 For new applications using CloudAPI SDKs, it is recommended that one explicitly
 accept a particular major version, e.g. `Accept-Version: ~8`, so that
 future CloudAPI backward incompatible changes (always done with a *major*
 version bump) don't break your application.
 
-The `triton` tool uses `Accept-Version: ~8||~7` by default. Users can restrict
-the API version via the `triton --accept-version=RANGE ...` option. The older
-`sdc-*` tools from node-smartdc similarly use `~8||~7` by default, and users
-can restrict the API version via the `SDC_API_VERSION=RANGE` environment
-variable or the `--api-version=RANGE` option to each command.
+The [`triton` tool](https://github.com/joyent/node-triton) uses
+`Accept-Version: ~8||~7` by default. Users can restrict the API version via the
+`triton --accept-version=RANGE ...` option. The older `sdc-*` tools from
+node-smartdc similarly use `~8||~7` by default, and users can restrict the API
+version via the `SDC_API_VERSION=RANGE` environment variable or the
+`--api-version=RANGE` option to each command.
 
-The rest of this section describes API changes in each version.
+The set of supported *API versions* is given in the ping endpoint:
+
+    GET /ping
+    accept: application/json
+    accept-version: ~8
+    ...
+
+    HTTPS/1.1 200 OK
+    server: cloudapi/8.3.0
+    content-type: application/json
+    ...
+    api-version: 8.0.0
+
+    {
+        "ping": "pong",
+        "cloudapi": {
+            "versions": [
+                "7.0.0",
+                "7.1.0",
+                "7.2.0",
+                "7.3.0",
+                "8.0.0"
+            ]
+        }
+    }
+
+
+# Versions
+
+The section describes API changes in CloudAPI versions.
+
+## 8.3.0
+
+- CreateMachine supports a new `affinity` field for specifying affinity rules.
+  Affinity rules (inspired by Docker Swarm affinity filters) allow a more
+  powerful mechanism for controlling server placement of instances.
+  This deprecates the `locality` field for "locality hints" on CreateMachine.
+  Limitation: Affinity rules currently do not properly consider *concurrent*
+  provisions (see [TRITON-9](https://smartos.org/bugview/TRITON-9)).
+
+  This CloudAPI feature is comparable to [Triton's Docker placement affinity
+  rules](https://apidocs.joyent.com/docker/features/placement).
+
+## 8.2.1
+
+- GetMachine works with machines that do not have a package or a network. Such
+  machines cannot be created through CloudAPI, so this isn't applicable to most
+  people unless they have an operator do this for them. ListMachines no longer
+  breaks for such machines either.
+
+## 8.2.0
+
+- This version adds support for {{shortId}} tags in the 'name' parameter when
+  creating a machine using [CreateMachine](#CreateMachine) machine. Any
+  instances of {{shortId}} in the name will be replaced with the shortened
+  version (first 8 characters) of the machine's id.
+
+
+## 8.1.1
+
+- It's now possible to query packages using wildcards. See the
+[ListPackages](#ListPackages) section.
 
 
 ## 8.1.0
@@ -3702,6 +3776,11 @@ group      | String   | The group this package belongs to
 When any values are provided for one or more of the aforementioned inputs, the
 retrieved packages will match all of them.
 
+When querying, wildcards (i.e. '*') are allowed for string fields. For example,
+to list all packages with a name that starts with "foo", give "foo*" as the
+package name.
+
+
 ### Returns
 
 An array of objects, of the form:
@@ -3906,6 +3985,15 @@ credentials | Boolean  | Whether to include the generated credentials for instan
 Note that if the special input `tags=*` is provided, any other input will be
 completely ignored and the response will return all instances with any tag.
 
+Be aware that in the case of instances created with vmadm directly (i.e. not
+through CloudAPI), ips, networks, primaryIp and package may be in a different
+format than expected. The `ips` array can contain the value "dhcp", not just
+IP strings, the `networks` array can contain null values for networks that
+CloudAPI was unable to determine (e.g. as a result of a "dhcp" IP), `primaryIp`
+too can have the value of "dhcp", and the package string can be empty instead of
+a UUID. Unless ops is bypassing CloudAPI and creating instances directly, it is
+unlikely you need concern yourself with this caveat.
+
 ### Returns
 
 An array of instance objects, which contain:
@@ -4086,6 +4174,15 @@ compute_node | String  | UUID of the server on which the instance is located
 package     | String   | The id or name of the package used to create this instance
 dns_names   | Array[String] | DNS names of the instance (if the instance is using [CNS](https://docs.joyent.com/public-cloud/network/cns))
 
+Be aware that in the case of instances created with vmadm directly (i.e. not
+through CloudAPI), ips, networks, primaryIp and package may be in a different
+format than expected. The `ips` array can contain the value "dhcp", not just
+IP strings, the `networks` array can contain null values for networks that
+CloudAPI was unable to determine (e.g. as a result of a "dhcp" IP), `primaryIp`
+too can have the value of "dhcp", and the package string can be empty instead of
+a UUID. Unless ops is bypassing CloudAPI and creating instances directly, it is
+unlikely you need concern yourself with this caveat.
+
 ### Errors
 
 For all possible errors, see [CloudAPI HTTP Responses](#cloudapi-http-responses).
@@ -4207,32 +4304,13 @@ network (it will have one public IP), and one internally-accessible network from
 the datacenter network pools.  It is possible to have an instance attached to
 only an internal network, or both public and internal, or just external.
 
-Be aware that CreateMachine does not return IP addresses.  To obtain the IP
-address of a newly-provisioned instance, poll [GetMachine](#GetMachine) until
-the instance state is `running`.
+Be aware that CreateMachine does not return IP addresses or networks.  To
+obtain the IP addresses and networks of a newly-provisioned instance, poll
+[GetMachine](#GetMachine) until the instance state is `running`.
 
 Typically, Triton will allocate the new instance somewhere reasonable within the
-cloud.  You may want this instance to be placed on the same server as another
-instance you have, or have it placed on an entirely different server from your
-existing instances so that you can spread them out. In either case, you can
-provide locality hints (aka 'affinity' criteria) to CloudAPI.
-
-Here is an example of a locality hint:
-
-    "locality": {
-      "strict": false,
-      "near": ["af7ebb74-59be-4481-994f-f6e05fa53075"],
-      "far": ["da568166-9d93-42c8-b9b2-bce9a6bb7e0a", "d45eb2f5-c80b-4fea-854f-32e4a9441e53"]
-    }
-
-UUIDs provided should be the ids of instances belonging to you. If there is only
-a single UUID entry in an array, you can omit the array and provide the UUID
-string directly as the value to a near/far key.
-
-`strict` defaults to false, meaning that Triton will attempt to meet all the
-`near` and/or `far` criteria but will still provision the instance when no
-server fits all the requirements. If `strict` is set to true, the creation of
-the new instance will fail if the affinity criteria cannot be met.
+cloud. See [affinity rules](#affinity-rules) below for options on controlling
+server placement of new instances.
 
 When Triton CNS is enabled, the DNS search domain of the new VM will be
 automatically set to the suffix of the "instance" record that is created for
@@ -4244,13 +4322,15 @@ be changed later within the instance, if desired.
 
 ### Inputs
 
+
 **Field** | **Type** | **Description**
 --------- | -------- | ---------------
-name      | String   | Friendly name for this instance; default is the first 8 characters of the machine id
+name      | String   | Friendly name for this instance; default is the first 8 characters of the machine id. If the name includes the string {{shortId}}, any instances of that tag within the name will be replaced by the first 8 characters of the machine id.
 package   | String   | Id of the package to use on provisioning, obtained from [ListPackages](#ListPackages)
 image     | String   | The image UUID (the "id" field in [ListImages](#ListImages))
-networks  | Array    | Desired networks ids, obtained from [ListNetworks](#ListNetworks)
-locality  | Object[String => Array] | Optionally specify which instances the new instance should be near or far from
+networks  | Array    | Desired networks ids, obtained from [ListNetworks](#ListNetworks). See the note about network pools under [AddNic](#AddNic).
+affinity  | Array    | (Added in CloudAPI v8.3.0.) Optional array of [affinity rules](#affinity-rules).
+locality  | Object   | (Deprecated in CloudAPI v8.3.0.) Optionally object of [locality hints](#locality-hints), specify which instances the new instance should be near or far from.
 metadata.$name | String | An arbitrary set of metadata key/value pairs can be set at provision time, but they must be prefixed with "metadata."
 tag.$name | String   | An arbitrary set of tags can be set at provision time, but they must be prefixed with "tag."
 firewall_enabled | Boolean | Completely enable or disable firewall for this instance. Default is false
@@ -4364,6 +4444,77 @@ Create instance with tags
 or
 
     $ sdc-createmachine --image=2b683a82-a066-11e3-97ab-2faa44701c5a --package=7b17343c-94af-6266-e0e8-893a3b9993d0 -t foo=bar -t group=test
+
+
+### Affinity rules
+
+As of CloudAPI v8.3.0 an "affinity" field can be specified with CreateMachine.
+It is an array of "affinity rules" to specify rules (or hints, "soft rules") for
+placement of the new instance.
+
+By default, Triton makes a reasonable attempt to spread all containers (and
+non-Docker containers and VMs) owned by a single account across separate
+physical servers.
+
+Affinity rules are of one of the following forms:
+
+    instance<op><value>
+    container<op><value>
+    <tagName><op><value>
+
+<op> is one of:
+
+
+- `==`: The new instance must be on the same node as the instance(s) identified
+  by <value>.
+- `!=`: The new instance must be on a different node to the instance(s)
+  identified by <value>.
+- `==~`: The new instance should be on the same node as the instance(s)
+  identified by <value>. I.e. this is a best effort or "soft" rule.
+- `!=~`: The new instance should be on a different node to the instance(s)
+  identified by <value>. I.e. this is a best effort or "soft" rule.
+
+<value> is an exact string, simple \*-glob, or regular expression to match
+against instance names or IDs, or against the named tag's value. Some examples:
+
+    # Run on the same node as instance silent_bob.
+    triton instance create -a instance==silent_bob ...
+
+    # Run on a different node to all instances tagged with 'role=database'.
+    triton instance create -a 'role!=database' ...
+
+    # Run on a different node to all instances with names starting with "foo".
+    triton instance create -a 'instance!=foo*' ...
+
+    # Same, using a regular expression.
+    triton instance create -a 'instance!=/^foo/' ...
+
+
+### Locality hints
+
+(Deprecated in CloudAPI v8.3.0.)
+
+You may want this instance to be placed on the same server as another
+instance you have, or have it placed on an entirely different server from your
+existing instances so that you can spread them out. In either case, you can
+provide locality hints to CloudAPI.
+
+Here is an example of a locality hint:
+
+    "locality": {
+      "strict": false,
+      "near": ["af7ebb74-59be-4481-994f-f6e05fa53075"],
+      "far": ["da568166-9d93-42c8-b9b2-bce9a6bb7e0a", "d45eb2f5-c80b-4fea-854f-32e4a9441e53"]
+    }
+
+UUIDs provided should be the ids of instances belonging to you. If there is only
+a single UUID entry in an array, you can omit the array and provide the UUID
+string directly as the value to a near/far key.
+
+`strict` defaults to false, meaning that Triton will attempt to meet all the
+`near` and/or `far` criteria but will still provision the instance when no
+server fits all the requirements. If `strict` is set to true, the creation of
+the new instance will fail if the affinity criteria cannot be met.
 
 ### User-script
 
@@ -8004,7 +8155,8 @@ InUseError       | The VLAN currently has active networks on it
 
 CloudAPI provides a way to get details on public and customer-specific networks
 in a datacenter. This also includes all of the networks available in your
-fabric.
+fabric. Your fabric networks are exclusive to your account. All other networks
+may be usable by other tenants.
 
 
 ## ListNetworks (GET /:login/networks)
@@ -8027,6 +8179,13 @@ name        | String   | The network name
 public      | Boolean  | Whether this a public or private (rfc1918) network
 fabric      | Boolean  | Whether this network is created on a fabric
 description | String   | Description of this network (optional)
+
+Each object returned may be an individual network, or a network pool. A network
+pool is a logical grouping of one or more networks that share the same
+routability characteristics. See [AddNic](#AddNic) about the behavior of
+provisioning with a network pool. This also means that the network id(s)
+returned by GetMachine or GetNic will not be in the list of networks returned
+by ListNetworks if it was originally provisioned using a pool.
 
 If the network is on a fabric, the following additional fields are included:
 
@@ -8153,7 +8312,184 @@ or
     }
 
 
+## ListNetworkIPs (GET /:login/networks/:id/ips)
 
+List a network's IPs. On a public network only IPs owned by the user will be
+returned.  On a private network all IPs that are either reserved or allocated
+will be returned.
+
+Note that not every network from [ListNetworks](#ListNetworks) will work. Some
+UUIDs are for pools which are not supported at this time.  However, every
+network UUID from [GetMachine](#GetMachine) and [GetNic](#GetNic) will work, as
+they are UUIDs for a specific network.
+
+The `reserved` field determines if the IP can be used automatically when
+provisioning a new instance. If `reserved` is set to true, then the IP will not
+be given out.
+
+The `managed` field in the IP object tells you if the IP is manged by Triton
+itself. An example of this is the gateway and broadcast IPs on a network.
+
+If the IP is associated with an instance then `owner_uuid` will be shown as
+well, so that on shared private networks it is clear who is using the IP.  The
+`belongs_to_uuid` field will tell you which instance owns the IP if any, and
+will only be present if that instance is owned by you.
+
+You can paginate this API by passing in `offset` and `limit`.  HTTP responses
+will contain the additional headers `x-resource-count` and `x-query-limit`.  If
+`x-resource-count` is less than `x-query-limit`, you're done, otherwise call the
+API again with `offset` set to `offset` + `limit` to fetch additional instances.
+
+### Inputs
+
+**Field**    | **Type** | **Description**
+------------ | -------- | ---------------
+limit        | Number   | Return a max of N IPs; default is 1000 (which is also the maximum allowable result set size)
+offset       | Number   | Get a `limit` number of IPs starting at this `offset`
+
+### Returns
+
+An array of IP objects.  IPs are:
+
+**Field**  | **Type**   | **Description**
+---------- | ---------- | ---------------
+ip         | String     | IP Address
+reserved   | Boolean    | Whether this IP is reserved or not
+managed    | Boolean    | True if the user cannot modify the IP via UpdateNetworkIP (example broadcast and gateway IPs)
+owner_uuid | UUID       | UUID of the owner that the instance is associated with (Optional)
+belongs_to_uuid | UUID  | UUID of the instance the IP is associated with (Optional)
+
+### Errors
+
+For all possible errors, see [CloudAPI HTTP Responses](#cloudapi-http-responses).
+
+**Error Code**   | **Description**
+---------------- | ---------------
+ResourceNotFound | If `:login` or `:id` does not exist
+
+### CLI Command
+
+    $ triton network ip list daeb93a2-532e-4bd4-8788-b6b30f10ac17
+
+#### Example Request
+
+    GET /my/networks/daeb93a2-532e-4bd4-8788-b6b30f10ac17/ips HTTP/1.1
+    authorization: Signature keyId="...
+    accept: application/json
+    accept-version: ~8
+    host: api.example.com
+
+#### Example Response
+
+    HTTP/1.1 200 OK
+    x-query-limit: 1000
+    x-resource-count: 4
+    Content-Type: application/json
+    Content-Length: 331
+    Access-Control-Allow-Origin: *
+    Access-Control-Allow-Headers: Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, Api-Version, Response-Time
+    Access-Control-Allow-Methods: GET, HEAD
+    Access-Control-Expose-Headers: Api-Version, Request-Id, Response-Time
+    Connection: Keep-Alive
+    Content-MD5: +d/D0BiDjXGmeuxP93uZ5Q==
+    Date: Tue, 31 Oct 2017 20:49:11 GMT
+    Server: cloudapi/8.3.0
+    Api-Version: 8.0.0
+    Request-Id: fdbce926-fc33-456f-af3c-c39b59cd4066
+    Response-Time: 82
+
+    [
+      {
+        "ip": "192.168.128.1",
+        "reserved": true,
+        "managed": true
+      },
+      {
+        "ip": "192.168.128.4",
+        "reserved": true,
+        "managed": false
+      },
+      {
+        "ip": "192.168.128.5",
+        "reserved": false,
+        "owner_uuid": "7dfbbcda-4f62-cdf8-df31-d1e4d8d34c5e",
+        "belongs_to_uuid": "272a7a08-ddc7-c4b2-97bd-ae3257fd8eb9",
+        "managed": false
+      },
+      {
+        "ip": "192.168.131.255",
+        "reserved": true,
+        "managed": true
+      }
+    ]
+
+## GetNetworkIP (GET /:login/networks/:id/ips/:ip_address)
+
+Get a network's IP. On a public network you can only get an IP owned by you. On
+private network you can get an IP owned by any of the network's shared owners,
+however the `belongs_to_uuid` field will be omitted if you do not own the
+instance the IP is assocaited with.
+
+### Inputs
+
+* None
+
+### Returns
+
+An IP object:
+
+**Field**  | **Type**   | **Description**
+---------- | ---------- | ---------------
+ip         | String     | IP Address
+reserved   | Boolean    | Whether this IP is reserved or not
+managed    | Boolean    | True if the user cannot modify the IP via UpdateNetworkIP (example broadcast and gateway IPs)
+owner_uuid | UUID       | UUID of the owner that the instance is associated with (Optional)
+belongs_to_uuid | UUID  | UUID of the instance the IP is associated with (Optional)
+
+### Errors
+
+For all possible errors, see [CloudAPI HTTP Responses](#cloudapi-http-responses).
+
+**Error Code**   | **Description**
+---------------- | ---------------
+ResourceNotFound | If `:login`, `:id`, or `:ip_address` does not exist
+
+### CLI Command
+
+    $ triton network ip get daeb93a2-532e-4bd4-8788-b6b30f10ac17 192.168.128.5
+
+#### Example Request
+
+    GET /my/networks/daeb93a2-532e-4bd4-8788-b6b30f10ac17/ips/192.168.128.5 HTTP/1.1
+    authorization: Signature keyId="...
+    accept: application/json
+    accept-version: ~8
+    host: api.example.com
+
+#### Example Response
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+    Content-Length: 164
+    Access-Control-Allow-Origin: *
+    Access-Control-Allow-Headers: Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, Api-Version, Response-Time
+    Access-Control-Allow-Methods: GET
+    Access-Control-Expose-Headers: Api-Version, Request-Id, Response-Time
+    Connection: Keep-Alive
+    Content-MD5: E65nD1+bNuM3eutsB/8lPw==
+    Date: Tue, 31 Oct 2017 20:54:03 GMT
+    Server: cloudapi/8.3.0
+    Api-Version: 8.0.0
+    Request-Id: a31097ad-6154-45a3-af08-e3dfddd70d22
+    Response-Time: 393
+
+    {
+      "ip": "192.168.128.5",
+      "reserved": false,
+      "owner_uuid": "7dfbbcda-4f62-cdf8-df31-d1e4d8d34c5e",
+      "belongs_to_uuid": "272a7a08-ddc7-c4b2-97bd-ae3257fd8eb9",
+      "managed": false
+    }
 
 # Nics
 
@@ -8334,16 +8670,24 @@ primary   | Boolean  | Whether this is the instance's primary NIC
 netmask   | String   | IPv4 netmask
 gateway   | String   | IPv4 gateway
 state     | String   | Describes the state of the NIC (most likely 'provisioning')
+network   | String   | The network UUID. See below.
 
 It also returns the Location in the headers where the new NIC lives in the HTTP
 API. If a NIC already exists for that network, a 302 redirect will be returned
 instead of the object.
 
+If the input network uuid is a network pool (a logical grouping of one or more
+networks that share the same routability characteristics) then a NIC will be
+provisioned from one of the associated networks. The network UUID returned will
+always be the UUID of the actual network assigned, not the UUID of the pool.
+
 NICs do not appear on an instance immediately, so the state of the new NIC can
-be checked by polling that location. While the NIC is provisioning, it will have
-a `state` of 'provisioning'. Once it's 'running', the NIC is active on the
-instance. If the provision fails, the NIC will be removed and the location will
-start returning 404.
+be checked by polling [GetNic](#GetNic). While the NIC is provisioning, it will
+have a `state` of 'provisioning'.  Once the Nic is active on the instance the
+NIC will have a `state` of 'running'.  If the provision fails, the NIC will be
+removed and GetNic will start returning 404.
+
+
 
 ### Errors
 
@@ -8401,7 +8745,7 @@ MissingParameter | If the `network` argument isn't present
     }
 
 
-## RemoveNic (POST /:login/machines/:id/nics/:mac)
+## RemoveNic (DELETE /:login/machines/:id/nics/:mac)
 
 Removes a NIC on an instance belonging to a given account.
 
