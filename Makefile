@@ -5,7 +5,7 @@
 #
 
 #
-# Copyright 2017 Joyent, Inc.
+# Copyright 2018 Joyent, Inc.
 #
 
 #
@@ -61,13 +61,17 @@ else
 	NODE_EXEC=$(shell which node)
 endif
 
+# XXX timf comment out during eng development
+#REQUIRE_ENG := $(shell git submodule update --init deps/eng)
 
-include ./tools/mk/Makefile.defs
+include ./deps/eng/tools/mk/Makefile.defs
+TOP ?= $(error Unable to access eng.git submodule Makefiles.)
+
 ifeq ($(shell uname -s),SunOS)
-	include ./tools/mk/Makefile.node_prebuilt.defs
+	include ./deps/eng/tools/mk/Makefile.node_prebuilt.defs
+	include ./deps/eng/tools/mk/Makefile.agent_prebuilt.defs
 endif
-include ./tools/mk/Makefile.smf.defs
-
+include ./deps/eng/tools/mk/Makefile.smf.defs
 
 #
 # Variables
@@ -75,16 +79,26 @@ include ./tools/mk/Makefile.smf.defs
 
 # Mountain Gorilla-spec'd versioning.
 
-
 ROOT                    := $(shell pwd)
 RELEASE_TARBALL         := $(NAME)-pkg-$(STAMP).tar.bz2
-RELSTAGEDIR                  := /tmp/$(STAMP)
+RELSTAGEDIR				:= /tmp/$(NAME)-$(STAMP)
+
+BASE_IMAGE_UUID = 04a48d7d-6bb5-4e83-8c3b-e60a99e0f48f
+BUILDIMAGE_NAME = $(NAME)
+BUILDIMAGE_DESC	= SDC CloudAPI
+BUILDIMAGE_PKG	= $(PWD)/$(RELEASE_TARBALL)
+BUILDIMAGE_PKGSRC = \
+	openssl-1.0.2o \
+	stud-0.3p53nb5 \
+ 	haproxy-1.6.2
+BUILDIMAGE_STAGEDIR = /tmp/buildimage-$(NAME)-$(STAMP)
+AGENTS		= amon config registrar
 
 #
 # Env vars
 #
 PATH	:= $(NODE_INSTALL)/bin:/opt/local/bin:${PATH}
-
+CLEAN_FILES += $(NAME)-pkg-*.tar.bz2
 
 #
 # Repo-specific targets
@@ -105,9 +119,8 @@ clean-docs:
 	-$(RMTREE) $(DOC_CLEAN_FILES)
 clean:: clean-docs
 
-
 .PHONY: release
-release: check build docs
+release: check all docs
 	@echo "Building $(RELEASE_TARBALL)"
 	@mkdir -p $(RELSTAGEDIR)/root/opt/smartdc/cloudapi
 	@mkdir -p $(RELSTAGEDIR)/site
@@ -225,11 +238,12 @@ provision_limits_plugin_test:
 
 plugins_test: provision_limits_plugin_test
 
-include ./tools/mk/Makefile.deps
+include ./deps/eng/tools/mk/Makefile.deps
 ifeq ($(shell uname -s),SunOS)
-	include ./tools/mk/Makefile.node_prebuilt.targ
+	include ./deps/eng/tools/mk/Makefile.node_prebuilt.targ
+	include ./deps/eng/tools/mk/Makefile.agent_prebuilt.targ
 endif
-include ./tools/mk/Makefile.smf.targ
-include ./tools/mk/Makefile.targ
+include ./deps/eng/tools/mk/Makefile.smf.targ
+include ./deps/eng/tools/mk/Makefile.targ
 
 sdc-scripts: deps/sdc-scripts/.git
