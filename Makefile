@@ -91,7 +91,6 @@ BUILDIMAGE_PKGSRC = \
 	openssl-1.0.2o \
 	stud-0.3p53nb5 \
  	haproxy-1.6.2
-BUILDIMAGE_STAGEDIR = /tmp/buildimage-$(NAME)-$(STAMP)
 AGENTS		= amon config registrar
 
 #
