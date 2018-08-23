@@ -1117,6 +1117,26 @@ function removeTagsFromServer(nicTags, server, client, callback) {
     });
 }
 
+function getOrCreateNicTag(tagName, client, callback) {
+    client.napi.getNicTag(tagName, function onGetNicTag(err, nicTag) {
+        if (err) {
+            if (err.statusCode === 404) {
+                createNicTag();
+            } else {
+                callback(err);
+            }
+        } else {
+            callback(null, nicTag);
+        }
+    });
+
+    function createNicTag() {
+        client.napi.createNicTag(tagName, function onCreateNicTag(err, nicTag) {
+            callback(err, nicTag);
+        });
+    }
+}
+
 /*
  * Make the already imported image with name "imageName" provisionable by making
  * it public.
@@ -1239,6 +1259,7 @@ module.exports = {
 
     // common functions to add/remove nic tags in tests
     addNicTagsToServer: addNicTagsToServer,
+    getOrCreateNicTag: getOrCreateNicTag,
     removeTagsFromServer: removeTagsFromServer,
 
     sdc_128_package: SDC_128_PACKAGE,
