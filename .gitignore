@@ -1,5 +1,5 @@
 *.swp
-bits
+/bits
 build
 *.node
 *.pdf
@@ -10,6 +10,7 @@ cscope.in.out
 cscope.po.out
 cscope.out
 cloudapi-*.tar.bz2
+/make_stamps
 node_modules
 etc/*.json
 etc/cloudapi.cfg
