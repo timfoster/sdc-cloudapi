@@ -95,7 +95,6 @@ AGENTS		= amon config registrar
 # Env vars
 #
 PATH	:= $(NODE_INSTALL)/bin:/opt/local/bin:${PATH}
-CLEAN_FILES += $(NAME)-pkg-*.tar.bz2
 
 #
 # Repo-specific targets
