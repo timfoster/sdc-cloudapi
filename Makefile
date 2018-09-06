@@ -78,7 +78,7 @@ include ./deps/eng/tools/mk/Makefile.smf.defs
 # Mountain Gorilla-spec'd versioning.
 
 ROOT                    := $(shell pwd)
-RELEASE_TARBALL         := $(NAME)-pkg-$(STAMP).tar.bz2
+RELEASE_TARBALL         := $(NAME)-pkg-$(STAMP).tar.gz
 RELSTAGEDIR				:= /tmp/$(NAME)-$(STAMP)
 
 BASE_IMAGE_UUID = 04a48d7d-6bb5-4e83-8c3b-e60a99e0f48f
@@ -143,7 +143,7 @@ release: check all docs
 		$(TOP)/build/node \
 		$(TOP)/build/docs \
 		$(RELSTAGEDIR)/root/opt/smartdc/$(NAME)/build
-	(cd $(RELSTAGEDIR) && $(TAR) -jcf $(ROOT)/$(RELEASE_TARBALL) root site)
+	(cd $(RELSTAGEDIR) && $(TAR) -I pigz -cf $(ROOT)/$(RELEASE_TARBALL) root site)
 	@rm -rf $(RELSTAGEDIR)
 
 
