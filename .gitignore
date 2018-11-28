@@ -18,3 +18,4 @@ etc/cloudapi.cfg
 smf/manifests/*.xml
 npm-shrinkwrap.json.old
 /tmp
+*.vim
