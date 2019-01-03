@@ -5,7 +5,7 @@
 #
 
 #
-# Copyright 2018 Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 #
 
 #
@@ -85,7 +85,6 @@ RELSTAGEDIR				:= /tmp/$(NAME)-$(STAMP)
 BASE_IMAGE_UUID = 04a48d7d-6bb5-4e83-8c3b-e60a99e0f48f
 BUILDIMAGE_NAME = $(NAME)
 BUILDIMAGE_DESC	= SDC CloudAPI
-BUILDIMAGE_PKG	= $(PWD)/$(RELEASE_TARBALL)
 BUILDIMAGE_PKGSRC = \
 	openssl-1.0.2o \
 	stud-0.3p53nb5 \
