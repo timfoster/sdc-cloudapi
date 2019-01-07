@@ -149,12 +149,12 @@ release: check all docs
 
 .PHONY: publish
 publish: release
-	@if [[ -z "$(BITS_DIR)" ]]; then \
-	  echo "error: 'BITS_DIR' must be set for 'publish' target"; \
+	@if [[ -z "$(ENGBLD_BITS_DIR)" ]]; then \
+	  echo "error: 'ENGBLD_BITS_DIR' must be set for 'publish' target"; \
 	  exit 1; \
 	fi
-	mkdir -p $(BITS_DIR)/$(NAME)
-	cp $(ROOT)/$(RELEASE_TARBALL) $(BITS_DIR)/$(NAME)/$(RELEASE_TARBALL)
+	mkdir -p $(ENGBLD_BITS_DIR)/$(NAME)
+	cp $(ROOT)/$(RELEASE_TARBALL) $(ENGBLD_BITS_DIR)/$(NAME)/$(RELEASE_TARBALL)
 
 .PHONY: test no_machines_test auth_test account_test datacenters_test datasets_test fabrics_test images_test keys_test networks_test nics_test machines_all_test machines_70_test machines_71_test machines_72_test machines_73_test machines_80_test machines_test packages_test populate_networks_test services_test users_test provision_limits_plugin_test plugins_test tests_test
 
