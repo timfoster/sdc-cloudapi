@@ -9,7 +9,7 @@ build
 cscope.in.out
 cscope.po.out
 cscope.out
-cloudapi-*.tar.bz2
+cloudapi-*.tar.gz
 /make_stamps
 node_modules
 etc/*.json
